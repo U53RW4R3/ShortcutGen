@@ -27,17 +27,17 @@ Usage: shortcutgen <flags>
                                         exfiltrate.
     -s, --share                         Specify an SMB share (applies with -h flag
                                         when it's optional for 'lnk' payload module).
-    -n, --name                          Specify a name. It is optional when 'lnk'
+    -n, --name                          Specify a name. It is optional when 'lnk' is specified.
                                         payload module is specified (applies with -h flag).
                                         For 'desktop' payload module it is mandatory.
     -d, --description                   Specify the description of the payload.
-    -ic, --icon                              Specify a custom icon.
+    -ic, --icon                         Specify a custom icon.
     -w, --window                        Specify a window. For 'lnk' payload windowstyle
                                         'normal' is set by default if not specified.
                                         The available windowstyles are: 'normal', 'maximized',
                                         and 'minimized'. For 'desktop' payload it is set to
                                         'false', the available options are: 'true' and 'false'.
-    -wd, --workingdirectory                  Specify a working directory.
+    -wd, --workingdirectory             Specify a working directory.
     -o, --output                        Specify an output.
     -v, --verbose                       Display more information.
     -V, --version                       Display the program's version number.
