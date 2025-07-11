@@ -252,7 +252,7 @@ $ shortcutgen -p desktop -n "Document File" -c "python" -a "\"<payload>\"" -ic "
 
 ##### Windows
 
-> [!INFO]
+> [!NOTE]
 > The deletion method won't work if the disk image is read-only.
 
 You can of course self delete the payload after execution.
