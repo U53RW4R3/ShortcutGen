@@ -9,7 +9,7 @@ RESET="\033[0m"
 
 # Set the WINEPREFIX_DIRECTORY to the user's home directory
 WINEPREFIX_DIRECTORY="${HOME}/.wine"
-GITHUB_REPOSITORY_API="https://api.github.com/repos"
+GITHUB_REPOSITORY_API_URL="https://api.github.com/repos"
 
 function check_program() {
     type -P "${1}" 2>/dev/null
@@ -62,7 +62,7 @@ function invoke_as() {
 }
 
 function install_powershell() {
-    local repository="${GITHUB_REPOSITORY_API}/PowerShell/PowerShell/releases/latest"
+    local repository="${GITHUB_REPOSITORY_API_URL}/PowerShell/PowerShell/releases/latest"
     local response=$(curl -s "${repository}")
     local installer=""
     local artifacts=""
@@ -138,10 +138,14 @@ function install_packages() {
     then
         invoke_as "DEBIAN_FRONTEND=noninteractive apt update -qq"
         invoke_as "DEBIAN_FRONTEND=noninteractive apt install -yqq ${programs[*]}"
-    elif [[ -f "/etc/fedora-release" ]]
+    elif [[ -f "/etc/fedora-release" || -f "/etc/openmandriva-release" ]]
     then
         invoke_as "dnf update"
         invoke_as "dnf install -y ${programs[*]}"
+    elif [[ -f "/etc/SuSE-release" ]]
+    then
+        invoke_as "zypper refresh"
+        invoke_as "zypper install -y ${programs[*]}"
     elif [[ -f "/etc/redhat-release" ]]
     then
         if [[ -n $(check_program "yum") ]]
@@ -153,10 +157,22 @@ function install_packages() {
             invoke_as "dnf update"
             invoke_as "dnf install -y ${programs[*]}"
         fi
+    elif [[ -f "/etc/void-release" ]]
+    then
+        invoke_as "xbps-install -S"
+        invoke_as "xbps-install -y ${programs[*]}"
     elif [[ -f "/etc/arch-release" ]]
     then
         invoke_as "pacman -Sy"
         invoke_as "pacman -S --noconfirm ${programs[*]}"
+    elif [[ -f "/etc/NIXOS/version" ]]
+    then
+        invoke_as "nix-channel --update"
+        invoke_as "nix-env -iA ${program[*]}"
+    elif [[ -f "/etc/gentoo-release" ]]
+    then
+        invoke_as "emerge --sync"
+        invoke_as "emerge --quiet --ask=0 ${programs[*]}"
     fi
 }
 
@@ -204,11 +220,18 @@ function check_dependencies() {
                     packages+=("${program}")
                     packages+=("wine32")
                     packages+=("wine64")
+                    packages+=("wine-mono")
                 else
                     packages+=("${program}")
+                    packages+=("wine-mono")
                 fi
+            elif [[ -f "/etc/NIXOS/version" ]]
+            then
+                packages+=("nixpkgs.${program}")
+                packages+=("nixpkgs.${program}Mono")
             else
                 packages+=("${program}")
+                packages+=("wine-mono")
             fi
         elif [[ "${program}" == "desktop-file-edit" ]]
         then
@@ -234,7 +257,7 @@ function main() {
     local source="/usr/local/src/${program}.sh"
     local destination="/usr/local/bin/${program}"
     local pattern="${program}.sh"
-    local repository="${GITHUB_REPOSITORY_API}/U53RW4R3/ShortcutGen/releases/latest"
+    local repository="${GITHUB_REPOSITORY_API_URL}/U53RW4R3/ShortcutGen/releases/latest"
     local response=$(curl -s "${repository}")
     local artifacts=""
 
