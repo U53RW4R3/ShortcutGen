@@ -11,11 +11,18 @@ RESET="\033[0m"
 WINEPREFIX_DIRECTORY="${HOME}/.wine"
 GITHUB_REPOSITORY_API_URL="https://api.github.com/repos"
 
+function check_bash_version() {
+    local major=5
+    local minor=3
+
+    ((BASH_VERSINFO[0] >= "${major}" && BASH_VERSINFO[1] >= "${minor}")) && return 0
+}
+
 function check_program() {
     type -P "${1}" 2>/dev/null
 }
 
-function print() {
+function println() {
     local text="${1}"
 
     echo -e "${text}"
@@ -25,21 +32,21 @@ function info() {
     local message="${1}"
     local color="${BLUE}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function fin() {
     local message="${1}"
     local color="${GREEN}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function error() {
     local message="${1}"
     local color="${RED}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function quit() {
@@ -64,6 +71,7 @@ function invoke_as() {
 function install_powershell() {
     local repository="${GITHUB_REPOSITORY_API_URL}/PowerShell/PowerShell/releases/latest"
     local response=$(curl -s "${repository}")
+    local pattern="\"browser_download_url\":\ *\"([^\"]+)\"(.*)"
     local installer=""
     local artifacts=""
 
@@ -90,7 +98,7 @@ function install_powershell() {
     setup_wineprefix
 
     info "Fetching latest PowerShell release..."
-    while [[ "${response}" =~ \"browser_download_url\":\ *\"([^\"]+)\"(.*) ]]
+    while [[ "${response}" =~ ${pattern} ]]
     do
         artifacts+="${BASH_REMATCH[1]}"$'\n'
         response="${BASH_REMATCH[2]}"
@@ -103,14 +111,14 @@ function install_powershell() {
     local latest_version=$(cut -d '/' -f 8 <<< "${artifacts}" | head -n 1)
     latest_version=${latest_version#v}
 
-    local pattern="PowerShell-${latest_version}-win-x64.msi"
+    local filename="PowerShell-${latest_version}-win-x64.msi"
 
     # Convert artifacts to array for proper iteration
     local -a urls=(${artifacts})
 
     for url in "${urls[@]}"
     do
-        if [[ "${url}" == *"${pattern}"* ]]
+        if [[ "${url}" == *"${filename}"* ]]
         then
             installer=$(basename "${url}")
             [[ -f "${installer}" ]] && rm -f "${installer}"
@@ -165,7 +173,7 @@ function install_packages() {
     then
         invoke_as "pacman -Sy"
         invoke_as "pacman -S --noconfirm ${programs[*]}"
-    elif [[ -f "/etc/NIXOS/version" ]]
+    elif [[ -f "/etc/NIXOS" ]]
     then
         invoke_as "nix-channel --update"
         invoke_as "nix-env -iA ${program[*]}"
@@ -173,20 +181,32 @@ function install_packages() {
     then
         invoke_as "emerge --sync"
         invoke_as "emerge --quiet --ask=0 ${programs[*]}"
+    elif [[ -f "/etc/alpine-release" ]]
+    then
+        invoke_as "apk update"
+        invoke_as "apk add --no-cache --quiet ${program[*]}"
     fi
 }
 
 function check_distro() {
     function check_i386() {
-        if [[ -z $(dpkg --print-foreign-architectures | grep '^i386$' 2>/dev/null) ]]
-        then
-            info "Debian-based distro detected!"
-            info "Enabling i386 (32-bit) architecture..."
-            invoke_as "dpkg --add-architecture i386"
-        fi
+        local file="/var/lib/dpkg/arch"
+
+        info "Debian-based distro detected! Checking if i386 (32-bit) architecture is enabled..."
+        while read -r line
+        do
+            if [[ "${line}" == "i386" ]]
+            then
+                info "i386 (32-bit) architecture is already enabled! Skipping..."
+                break
+            else
+                info "i386 (32-bit) architecture has been disabled! Enabling..."
+                invoke_as "dpkg --add-architecture i386"
+            fi
+        done < "${file}"
     }
 
-    source "/etc/os-release"
+    source -p "/etc/" "os-release"
     if [[ -f "/etc/debian_version" ]]
     then
         if [[ "${ID}" == "debian" || "${ID_LIKE}" == "debian" ]]
@@ -225,7 +245,7 @@ function check_dependencies() {
                     packages+=("${program}")
                     packages+=("wine-mono")
                 fi
-            elif [[ -f "/etc/NIXOS/version" ]]
+            elif [[ -f "/etc/NIXOS" ]]
             then
                 packages+=("nixpkgs.${program}")
                 packages+=("nixpkgs.${program}Mono")
@@ -256,17 +276,24 @@ function main() {
     local program="shortcutgen"
     local source="/usr/local/src/${program}.sh"
     local destination="/usr/local/bin/${program}"
-    local pattern="${program}.sh"
+    local filename="${program}.sh"
     local repository="${GITHUB_REPOSITORY_API_URL}/U53RW4R3/ShortcutGen/releases/latest"
     local response=$(curl -s "${repository}")
+    local pattern="\"browser_download_url\":\ *\"([^\"]+)\"(.*)"
     local artifacts=""
+
+    if [[ ! $(check_bash_version) ]]
+    then
+        error "The program requires GNU Bash version 5.3 or later!"
+        quit 1
+    fi
 
     check_dependencies
 
     info "Installing ShortcutGen..."
     [[ -f "${source}" ]] && sudo rm -f "${source}" 2>/dev/null
 
-    while [[ "${response}" =~ \"browser_download_url\":\ *\"([^\"]+)\"(.*) ]]
+    while [[ "${response}" =~ ${pattern} ]]
     do
         artifacts+="${BASH_REMATCH[1]}"$'\n'
         response="${BASH_REMATCH[2]}"
@@ -278,7 +305,7 @@ function main() {
 
     for url in "${urls[@]}"
     do
-        if [[ "${url}" == *"${pattern}"* ]]
+        if [[ "${url}" == *"${filename}"* ]]
         then
             file=$(basename "${url}")
             [[ -f ${source} ]] && rm -f "${source}"

